@@ -7,10 +7,9 @@
 var app = require('../app');
 var debug = require('debug')('jam-with-friends:server');
 var http = require('http');
+var User = require('../user');
 
-var Devices = require('../devices.js');
-
-var midi = require('midi-launchpad').connect(0, false);
+var Device = require('../devices.js');
 
 /**
  * Get port from environment and store in Express.
@@ -100,22 +99,59 @@ function onListening() {
     : 'port ' + addr.port;
   debug('Listening on ' + bind);
 
+  devices = {
+    launchpad: null
+  };
+
   io.on('connection', function(socket){
+    console.log('Launchpad connected');
     socket.emit('hello');
 
-    for (var key in Devices) {
-      var obj = Devices[key];
-      for (var prop in obj){
-        if(obj.hasOwnProperty(prop)){
-          console.log(prop + " = " + obj[prop]);
-        }
+    socket.on('user:position', function(d){
+      switch(d){
+        case User.Position.HOST:
+          console.log('Host chosen...');
+          socket.position = User.Position.HOST;
+          break;
+        case User.Position.CLIENT:
+          socket.emit('session:name');
+          socket.position = User.Position.CLIENT;
+          break;
+        default:
+          socket.emit('disconnect');
+          socket.disconnect();
+          break;
       }
-    }
-  });
+    });
 
-  midi.on('ready', function(launchpad){
-    launchpad.getButton(0, 0).on('press', function(){
-      io.emit('button:press', {for: 'everyone'});
-    }).light(3);
+    socket.on('session:name', function(d){
+      if(socket.position === User.Position.CLIENT){
+        socket.emit('device:select');
+
+        socket.on('device:select', function(device){
+          switch(device.id){
+            case 'launchpad':
+              socket.device = new Device.Launchpad(socket);
+              var midi = require('midi');
+              var input = new midi.input();
+              input.openVirtualPort("Wireless Novation Launchpad S - " + device.name);
+              devices.launchpad = socket.device;
+
+              devices.launchpad.triggers.anyButtonPress.bind(function(x, y){
+                devices.launchpad.actions.toggleButton.call(x, y, 3);
+                console.log('Things happened: ' + x + y);
+                io.emit('button:press', {for: 'everyone'});
+              });
+              io.emit('launchpad:connect', {for: 'everyone'});
+              break;
+          }
+        });
+      }
+    });
+
+    socket.on('disconnect', function(){
+      io.emit('launchpad:disconnect', {for: 'everyone'});
+      console.log('Launchpad is gone');
+    });
   });
 }
